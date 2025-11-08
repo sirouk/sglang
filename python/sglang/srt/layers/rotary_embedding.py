@@ -1,6 +1,7 @@
 # Adapted from https://raw.githubusercontent.com/vllm-project/vllm/refs/tags/v0.6.6.post1/vllm/model_executor/layers/rotary_embedding.py
 
 """Rotary Positional Embeddings."""
+
 import itertools
 import math
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -175,9 +176,9 @@ class RotaryEmbedding(CustomOp):
         fused_set_kv_buffer_arg: Optional[FusedSetKVBufferArg] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A PyTorch-native implementation of forward()."""
-        assert (
-            fused_set_kv_buffer_arg is None
-        ), "fused_set_kv_buffer_arg is not supported for native implementation"
+        assert fused_set_kv_buffer_arg is None, (
+            "fused_set_kv_buffer_arg is not supported for native implementation"
+        )
 
         if offsets is not None:
             positions = positions + offsets
@@ -212,9 +213,9 @@ class RotaryEmbedding(CustomOp):
         fused_set_kv_buffer_arg: Optional[FusedSetKVBufferArg] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A PyTorch-npu implementation of forward()."""
-        assert (
-            fused_set_kv_buffer_arg is None
-        ), "fused_set_kv_buffer_arg is not supported for npu implementation"
+        assert fused_set_kv_buffer_arg is None, (
+            "fused_set_kv_buffer_arg is not supported for npu implementation"
+        )
 
         if get_bool_env_var("SGLANG_ENABLE_TORCH_COMPILE"):
             return self.forward_native(
@@ -246,9 +247,9 @@ class RotaryEmbedding(CustomOp):
         offsets: Optional[torch.Tensor] = None,
         fused_set_kv_buffer_arg: Optional[FusedSetKVBufferArg] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert (
-            fused_set_kv_buffer_arg is None
-        ), "fused_set_kv_buffer_arg is not supported for cpu implementation"
+        assert fused_set_kv_buffer_arg is None, (
+            "fused_set_kv_buffer_arg is not supported for cpu implementation"
+        )
 
         positions = torch.add(positions, offsets) if offsets is not None else positions
         if _is_cpu_amx_available:
@@ -278,6 +279,13 @@ class RotaryEmbedding(CustomOp):
             and (self.head_size in [64, 128, 256, 512])
             and self.dtype != torch.float32
         ):
+            if (
+                self.cos_sin_cache.device != query.device
+                or self.cos_sin_cache.dtype != query.dtype
+            ):
+                self.cos_sin_cache = self.cos_sin_cache.to(
+                    query.device, dtype=query.dtype
+                )
             apply_rope_with_cos_sin_cache_inplace(
                 positions=positions,
                 query=query,
@@ -293,9 +301,9 @@ class RotaryEmbedding(CustomOp):
                 ),
             )
         else:
-            assert (
-                fused_set_kv_buffer_arg is None
-            ), "save kv cache is not supported for vllm_rotary_embedding."
+            assert fused_set_kv_buffer_arg is None, (
+                "save kv cache is not supported for vllm_rotary_embedding."
+            )
             self.cos_sin_cache = self.cos_sin_cache.to(query.device, dtype=query.dtype)
             self.vllm_rotary_embedding(
                 positions,
@@ -321,9 +329,9 @@ class RotaryEmbedding(CustomOp):
         offsets: Optional[torch.Tensor] = None,
         fused_set_kv_buffer_arg: Optional[FusedSetKVBufferArg] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert (
-            fused_set_kv_buffer_arg is None
-        ), "fused_set_kv_buffer_arg is not supported for xpu implementation"
+        assert fused_set_kv_buffer_arg is None, (
+            "fused_set_kv_buffer_arg is not supported for xpu implementation"
+        )
         positions = torch.add(positions, offsets) if offsets is not None else positions
         return torch.ops.sgl_kernel.rotary_embedding(
             positions,
@@ -912,7 +920,6 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
 
 
 class Llama3RotaryEmbedding(RotaryEmbedding):
-
     def __init__(
         self,
         head_size: int,
@@ -959,7 +966,6 @@ class Llama3RotaryEmbedding(RotaryEmbedding):
 
 
 class Llama4VisionRotaryEmbedding(RotaryEmbedding):
-
     def __init__(
         self,
         head_size: int,
@@ -1261,13 +1267,13 @@ def triton_mrope(
         head_size: int
     """
     n_row, n_q_head_head_dim = q.shape
-    assert (
-        n_q_head_head_dim % head_size == 0
-    ), f"q shape {n_q_head_head_dim} must be divisible by head_size {head_size}"
+    assert n_q_head_head_dim % head_size == 0, (
+        f"q shape {n_q_head_head_dim} must be divisible by head_size {head_size}"
+    )
     n_q_head = n_q_head_head_dim // head_size
-    assert (
-        k.shape[1] % head_size == 0
-    ), f"k shape {k.shape[1]} must be divisible by head_size {head_size}"
+    assert k.shape[1] % head_size == 0, (
+        f"k shape {k.shape[1]} must be divisible by head_size {head_size}"
+    )
     n_kv_head = k.shape[1] // head_size
     pad_hd = triton.next_power_of_2(head_size)
     pad_n_q_head = triton.next_power_of_2(n_q_head)
@@ -1406,9 +1412,9 @@ class MRotaryEmbedding(RotaryEmbedding):
             query: [num_tokens, num_heads * head_size]
             key: [num_tokens, num_kv_heads * head_size]
         """
-        assert (
-            fused_set_kv_buffer_arg is None
-        ), "save kv cache is not supported for MRotaryEmbedding."
+        assert fused_set_kv_buffer_arg is None, (
+            "save kv cache is not supported for MRotaryEmbedding."
+        )
         assert positions.ndim == 1 or positions.ndim == 2
 
         num_tokens = positions.shape[-1]
@@ -2756,9 +2762,9 @@ def get_rope_cpu(
 
     assert rope_scaling is not None
     scaling_type = rope_scaling["rope_type"]
-    assert (
-        scaling_type == "deepseek_yarn"
-    ), "Only deepseek_yarn is supported for CPU for now"
+    assert scaling_type == "deepseek_yarn", (
+        "Only deepseek_yarn is supported for CPU for now"
+    )
 
     scaling_factor = rope_scaling["factor"]
     original_max_position = rope_scaling["original_max_position_embeddings"]
