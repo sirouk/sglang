@@ -635,11 +635,28 @@ class TokenizerManager(TokenizerCommunicatorMixin):
         else:
             mm_inputs = None
 
+        self._maybe_cap_request_max_new_tokens(obj)
         self._validate_one_request(obj, input_ids)
         trace_slice_end(RequestStage.TOKENIZE, obj.rid)
         return self._create_tokenized_object(
             obj, input_text, input_ids, input_embeds, mm_inputs, token_type_ids
         )
+
+    def _maybe_cap_request_max_new_tokens(
+        self, obj: Union[GenerateReqInput, EmbeddingReqInput]
+    ) -> None:
+        """Clamp max_new_tokens in the raw request dict before validation."""
+        limit = self.server_args.max_completion_tokens
+        if limit is None:
+            return
+
+        sampling_params = getattr(obj, "sampling_params", None)
+        if not isinstance(sampling_params, dict):
+            return
+
+        requested = sampling_params.get("max_new_tokens")
+        if requested is not None and requested > limit:
+            sampling_params["max_new_tokens"] = limit
 
     def _validate_one_request(
         self, obj: Union[GenerateReqInput, EmbeddingReqInput], input_ids: List[int]
@@ -773,6 +790,7 @@ class TokenizerManager(TokenizerCommunicatorMixin):
         else:
             sampling_kwargs = obj.sampling_params
         sampling_params = SamplingParams(**sampling_kwargs)
+        self._enforce_sampling_max_completion_limit(sampling_params)
         sampling_params.normalize(self.tokenizer)
         sampling_params.verify(self.model_config.vocab_size)
 
@@ -821,6 +839,30 @@ class TokenizerManager(TokenizerCommunicatorMixin):
 
         return tokenized_obj
 
+    def _enforce_sampling_max_completion_limit(
+        self, sampling_params: SamplingParams
+    ) -> None:
+        """Apply the global --max-completion-tokens cap to finalized sampling params."""
+
+        limit = self.server_args.max_completion_tokens
+        if limit is None:
+            return
+
+        current = sampling_params.max_new_tokens
+        if current is None or current > limit:
+            sampling_params.max_new_tokens = limit
+
+        if (
+            sampling_params.max_new_tokens is not None
+            and sampling_params.min_new_tokens > sampling_params.max_new_tokens
+        ):
+            raise ValueError(
+                "min_new_tokens ({}) exceeds the configured --max-completion-tokens ({}). "
+                "Lower min_new_tokens or increase --max-completion-tokens.".format(
+                    sampling_params.min_new_tokens, limit
+                )
+            )
+
     async def _batch_tokenize_and_process(
         self, batch_size: int, obj: Union[GenerateReqInput, EmbeddingReqInput]
     ) -> List[Union[TokenizedGenerateReqInput, TokenizedEmbeddingReqInput]]:
@@ -853,7 +895,8 @@ class TokenizerManager(TokenizerCommunicatorMixin):
         # Process all requests
         tokenized_objs = []
         for i, req in enumerate(requests):
-            self._validate_one_request(obj[i], input_ids_list[i])
+            self._maybe_cap_request_max_new_tokens(req)
+            self._validate_one_request(req, input_ids_list[i])
             token_type_ids = (
                 token_type_ids_list[i] if token_type_ids_list is not None else None
             )
@@ -1255,9 +1298,9 @@ class TokenizerManager(TokenizerCommunicatorMixin):
 
     def auto_create_handle_loop(self):
         if self._chosen_loop is not None:
-            assert (
-                asyncio.get_event_loop() == self._chosen_loop
-            ), f"Please ensure only one event loop is ever used with SGLang. Previous loop: {self._chosen_loop}, current loop: {asyncio.get_event_loop()}"
+            assert asyncio.get_event_loop() == self._chosen_loop, (
+                f"Please ensure only one event loop is ever used with SGLang. Previous loop: {self._chosen_loop}, current loop: {asyncio.get_event_loop()}"
+            )
             return
 
         loop = asyncio.get_event_loop()
@@ -1336,7 +1379,7 @@ class TokenizerManager(TokenizerCommunicatorMixin):
         if not data_to_dump:
             return
 
-        object_name = f'crash_dump_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.pkl'
+        object_name = f"crash_dump_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pkl"
         filename = os.path.join(
             self.crash_dump_folder,
             os.getenv("HOSTNAME", None),
